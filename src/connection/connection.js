@@ -10,20 +10,35 @@ class Connection extends EventEmitter {
 
     async onConnected() {
 
-        // tell device what protocol version we support
-        try {
-            await this.deviceQuery(Constants.SupportedCompanionProtocolVersion);
-        } catch(e) {
-            // ignore
+        // tell device what protocol version we support. responses can be lost on a busy stream, so retry a few times
+        for(let attempt = 1; attempt <= 3; attempt++){
+            try {
+                await this.deviceQuery(Constants.SupportedCompanionProtocolVersion);
+                break;
+            } catch(e) {
+                // ignore and retry
+            }
         }
 
         // tell clients we are connected
         this.emit("connected");
-
     }
 
     onDisconnected() {
         this.emit("disconnected");
+    }
+
+    startResponseTimeout(reject, cleanup, timeoutMillis, label) {
+        if(timeoutMillis == null) {
+            return () => {};
+        }
+
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`timed out after ${timeoutMillis}ms waiting for ${label}`));
+        }, timeoutMillis);
+
+        return () => clearTimeout(timer);
     }
 
     async close() {
@@ -419,7 +434,6 @@ class Connection extends EventEmitter {
         } else {
             console.log(`unhandled frame: code=${responseCode}`, frame);
         }
-
     }
 
     onAdvertPush(bufferReader) {
@@ -772,18 +786,23 @@ class Connection extends EventEmitter {
 
     }
 
-    getSelfInfo(timeoutMillis = null) {
+    getSelfInfo(timeoutMillis = 5000) {
         return new Promise(async (resolve, reject) => {
 
-            // listen for response
-            this.once(Constants.ResponseCodes.SelfInfo, (selfInfo) => {
+            const onSelfInfo = (selfInfo) => {
+                clearTimer();
                 resolve(selfInfo);
-            });
-
-            // timeout after provided milliseconds if device did not respond
-            if(timeoutMillis != null){
-                setTimeout(reject, timeoutMillis);
             }
+
+            const cleanup = () => {
+                this.off(Constants.ResponseCodes.SelfInfo, onSelfInfo);
+            }
+
+            // never wait forever, and don't leak the listener on timeout
+            const clearTimer = this.startResponseTimeout(reject, cleanup, timeoutMillis, "SelfInfo");
+
+            // listen for response
+            this.once(Constants.ResponseCodes.SelfInfo, onSelfInfo);
 
             // request self info
             await this.sendCommandAppStart();
@@ -1039,23 +1058,31 @@ class Connection extends EventEmitter {
         });
     }
 
-    sendChannelTextMessage(channelIdx, text) {
+    sendChannelTextMessage(channelIdx, text, timeoutMillis = 5000) {
         return new Promise(async (resolve, reject) => {
             try {
 
-                // resolve promise when we receive ok
-                const onOk = () => {
+                const cleanup = () => {
                     this.off(Constants.ResponseCodes.Ok, onOk);
                     this.off(Constants.ResponseCodes.Err, onErr);
+                }
+
+                // resolve promise when we receive ok
+                const onOk = () => {
+                    clearTimer();
+                    cleanup();
                     resolve();
                 }
 
                 // reject promise when we receive err
                 const onErr = () => {
-                    this.off(Constants.ResponseCodes.Ok, onOk);
-                    this.off(Constants.ResponseCodes.Err, onErr);
+                    clearTimer();
+                    cleanup();
                     reject();
                 }
+
+                // a lost Ok must not hang the sender's responder forever
+                const clearTimer = this.startResponseTimeout(reject, cleanup, timeoutMillis, "Ok (send channel message)");
 
                 // listen for events
                 this.once(Constants.ResponseCodes.Ok, onOk);
@@ -1489,23 +1516,31 @@ class Connection extends EventEmitter {
         });
     }
 
-    deviceQuery(appTargetVer) {
+    deviceQuery(appTargetVer, timeoutMillis = 5000) {
         return new Promise(async (resolve, reject) => {
             try {
 
-                // resolve promise when we receive device info
-                const onDeviceInfo = (response) => {
+                const cleanup = () => {
                     this.off(Constants.ResponseCodes.DeviceInfo, onDeviceInfo);
                     this.off(Constants.ResponseCodes.Err, onErr);
+                }
+
+                // resolve promise when we receive device info
+                const onDeviceInfo = (response) => {
+                    clearTimer();
+                    cleanup();
                     resolve(response);
                 }
 
                 // reject promise when we receive err
                 const onErr = () => {
-                    this.off(Constants.ResponseCodes.DeviceInfo, onDeviceInfo);
-                    this.off(Constants.ResponseCodes.Err, onErr);
+                    clearTimer();
+                    cleanup();
                     reject();
                 }
+
+                // never wait forever for a response that was lost on the wire
+                const clearTimer = this.startResponseTimeout(reject, cleanup, timeoutMillis, "DeviceInfo");
 
                 // listen for events
                 this.once(Constants.ResponseCodes.DeviceInfo, onDeviceInfo);
@@ -2100,23 +2135,31 @@ class Connection extends EventEmitter {
         });
     }
 
-    getChannel(channelIdx) {
+    getChannel(channelIdx, timeoutMillis = 5000) {
         return new Promise(async (resolve, reject) => {
             try {
 
-                // resolve promise when we receive channel info response
-                const onChannelInfoResponse = (response) => {
+                const cleanup = () => {
                     this.off(Constants.ResponseCodes.ChannelInfo, onChannelInfoResponse);
                     this.off(Constants.ResponseCodes.Err, onErr);
+                }
+
+                // resolve promise when we receive channel info response
+                const onChannelInfoResponse = (response) => {
+                    clearTimer();
+                    cleanup();
                     resolve(response);
                 }
 
                 // reject promise when we receive err
                 const onErr = () => {
-                    this.off(Constants.ResponseCodes.ChannelInfo, onChannelInfoResponse);
-                    this.off(Constants.ResponseCodes.Err, onErr);
+                    clearTimer();
+                    cleanup();
                     reject();
                 }
+
+                // a lost ChannelInfo must not hang getChannels() forever
+                const clearTimer = this.startResponseTimeout(reject, cleanup, timeoutMillis, "ChannelInfo");
 
                 // listen for events
                 this.once(Constants.ResponseCodes.ChannelInfo, onChannelInfoResponse);

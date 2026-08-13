@@ -30,17 +30,25 @@ class NodeJSSerialConnection extends SerialConnection {
             this.onDisconnected();
         });
 
-        this.serialPort.on("error", function(err) {
-            console.log("SerialPort Error: ", err.message)
+        this.serialPort.on("error", (err) => {
+            this.emit("error", err);
         });
 
         this.serialPort.on("data", async (data) => {
             await this.onDataReceived(data);
         });
 
-        // open serial connection
-        this.serialPort.open();
+        await new Promise((resolve, reject) => {
+            this.serialPort.open((error) => {
+                if(error){
+                    reject(error);
+                } else {
+                    resolve();
+                }
+            });
+        });
 
+        this.serialPort.set({ dtr: true, rts: true });
     }
 
     async close() {

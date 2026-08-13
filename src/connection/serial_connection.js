@@ -3,6 +3,9 @@ import BufferReader from "../buffer_reader.js";
 import Constants from "../constants.js";
 import Connection from "./connection.js";
 
+// real companion frames are a few hundred bytes at most. a "length" beyond this is a desync artifact
+const MAX_FRAME_LENGTH = 1024;
+
 class SerialConnection extends Connection {
 
     constructor() {
@@ -43,10 +46,9 @@ class SerialConnection extends Connection {
     async onDataReceived(value) {
 
         // append received bytes to read buffer
-        this.readBuffer = [
-            ...this.readBuffer,
-            ...value,
-        ];
+        for(const byte of value){
+            this.readBuffer.push(byte);
+        }
 
         // process read buffer while there is enough bytes for a frame header
         // 3 bytes frame header = (1 byte frame type) + (2 bytes frame length as unsigned 16-bit little endian)
@@ -65,10 +67,9 @@ class SerialConnection extends Connection {
                     continue;
                 }
 
-                // ensure frame length valid
+                // ensure frame length is normal, otherwise skip one byte and resync
                 const frameLength = frameHeader.readUInt16LE();
-                if(!frameLength){
-                    // unexpected byte, lets skip it and try again
+                if(!frameLength || frameLength > MAX_FRAME_LENGTH){
                     this.readBuffer = this.readBuffer.slice(1);
                     continue;
                 }
