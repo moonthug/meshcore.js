@@ -1022,23 +1022,31 @@ class Connection extends EventEmitter {
 
     }
 
-    sendTextMessage(contactPublicKey, text, type) {
+    sendTextMessage(contactPublicKey, text, type, timeoutMillis = 5000) {
         return new Promise(async (resolve, reject) => {
             try {
 
-                // resolve promise when we receive sent response
-                const onSent = (response) => {
+                const cleanup = () => {
                     this.off(Constants.ResponseCodes.Sent, onSent);
                     this.off(Constants.ResponseCodes.Err, onErr);
+                }
+
+                // resolve promise when we receive sent response
+                const onSent = (response) => {
+                    clearTimer();
+                    cleanup();
                     resolve(response);
                 }
 
                 // reject promise when we receive err
                 const onErr = () => {
-                    this.off(Constants.ResponseCodes.Sent, onSent);
-                    this.off(Constants.ResponseCodes.Err, onErr);
+                    clearTimer();
+                    cleanup();
                     reject();
                 }
+
+                // a lost Sent must not hang the caller forever
+                const clearTimer = this.startResponseTimeout(reject, cleanup, timeoutMillis, "Sent (send text message)");
 
                 // listen for events
                 this.once(Constants.ResponseCodes.Sent, onSent);
